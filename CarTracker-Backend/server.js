@@ -22,8 +22,14 @@ const sequelize = new Sequelize(
     }
 );
 
-// Models
+// ====================== MODELS ======================
+
 const User = sequelize.define('User', {
+    id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+    },
     username: {
         type: DataTypes.STRING,
         unique: true,
@@ -41,9 +47,20 @@ const User = sequelize.define('User', {
         type: DataTypes.STRING,
         allowNull: false
     }
+}, {
+    hooks: {
+        beforeCreate: async (user) => {
+            user.password = await bcrypt.hash(user.password, 10);
+        }
+    }
 });
 
 const Car = sequelize.define('Car', {
+    id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+    },
     make: {
         type: DataTypes.STRING,
         allowNull: false
@@ -54,97 +71,208 @@ const Car = sequelize.define('Car', {
     },
     year: {
         type: DataTypes.INTEGER,
-        allowNull: false
+        allowNull: false,
+        validate: {
+            min: 1900,
+            max: new Date().getFullYear() + 1
+        }
     },
     vin: {
         type: DataTypes.STRING(17),
-        unique: true
+        unique: true,
+        validate: {
+            len: [17, 17]
+        }
     },
-    purchaseDate: DataTypes.DATE,
-    purchasePrice: DataTypes.FLOAT,
-    currentMileage: DataTypes.INTEGER
+    purchaseDate: DataTypes.DATEONLY,
+    purchasePrice: DataTypes.DECIMAL(10, 2),
+    currentMileage: DataTypes.INTEGER,
+    imageUrl: DataTypes.STRING
 });
 
-// Other models (Maintenance, Modification) follow same pattern...
+const Maintenance = sequelize.define('Maintenance', {
+    id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+    },
+    serviceType: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    date: {
+        type: DataTypes.DATEONLY,
+        allowNull: false
+    },
+    cost: DataTypes.DECIMAL(10, 2),
+    mileage: DataTypes.INTEGER,
+    notes: DataTypes.TEXT,
+    receiptUrl: DataTypes.STRING
+});
 
-// Relationships
+const Modification = sequelize.define('Modification', {
+    id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+    },
+    name: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    description: DataTypes.TEXT,
+    cost: DataTypes.DECIMAL(10, 2),
+    installDate: DataTypes.DATEONLY,
+    warrantyExpiry: DataTypes.DATEONLY,
+    installer: DataTypes.STRING
+});
+
+const FutureMod = sequelize.define('FutureMod', {
+    id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true
+    },
+    name: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    estimatedCost: DataTypes.DECIMAL(10, 2),
+    priority: {
+        type: DataTypes.ENUM('low', 'medium', 'high'),
+        defaultValue: 'medium'
+    },
+    targetDate: DataTypes.DATEONLY,
+    notes: DataTypes.TEXT
+});
+
+// ====================== RELATIONSHIPS ======================
+
 User.hasMany(Car);
 Car.belongsTo(User);
 
-// Initialize Database
-const initializeDatabase = async () => {
+Car.hasMany(Maintenance);
+Maintenance.belongsTo(Car);
+
+Car.hasMany(Modification);
+Modification.belongsTo(Car);
+
+Car.hasMany(FutureMod);
+FutureMod.belongsTo(Car);
+
+// ====================== AUTH MIDDLEWARE ======================
+
+const authenticate = async (req, res, next) => {
     try {
-        await sequelize.authenticate();
-        console.log('✅ Database connected');
+        const token = req.headers.authorization?.split(' ')[1];
+        if (!token) return res.status(401).json({ error: 'Access denied' });
 
-        // Use force: true ONLY for initial setup or when changing models
-        await sequelize.sync({ force: true });
-        console.log('🔄 Database synchronized');
-
-        // After first run, change to:
-        // await sequelize.sync({ alter: true });
-
-    } catch (error) {
-        console.error('❌ Database connection failed:', error);
-        process.exit(1);
-    }
-};
-
-initializeDatabase();
-
-
-// Auth Middleware
-const authenticate = (req, res, next) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).send('Access denied');
-
-    try {
-        req.user = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = await User.findByPk(decoded.id);
         next();
     } catch (err) {
-        res.status(400).send('Invalid token');
+        res.status(401).json({ error: 'Invalid token' });
     }
 };
 
-// Routes
+// ====================== ROUTES ======================
+
+// Auth Routes
 app.post('/api/register', async (req, res) => {
     try {
-        const hashedPassword = await bcrypt.hash(req.body.password, 10);
-        const user = await User.create({
-            username: req.body.username,
-            email: req.body.email,
-            password: hashedPassword
-        });
-        res.status(201).json(user);
+        const user = await User.create(req.body);
+        const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+        res.status(201).json({ user, token });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/api/login', async (req, res) => {
+    try {
+        const user = await User.findOne({ where: { username: req.body.username } });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        const valid = await bcrypt.compare(req.body.password, user.password);
+        if (!valid) return res.status(401).json({ error: 'Invalid password' });
+
+        const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+        res.json({ token });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/login', async (req, res) => {
-    const user = await User.findOne({ where: { username: req.body.username } });
-    if (!user) return res.status(404).send('User not found');
-
-    const validPass = await bcrypt.compare(req.body.password, user.password);
-    if (!validPass) return res.status(400).send('Invalid password');
-
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-    res.header('Authorization', token).send(token);
-});
-
-// Car Routes (protected)
+// Car Routes
 app.get('/api/cars', authenticate, async (req, res) => {
-    const cars = await Car.findAll({ where: { userId: req.user.id } });
-    res.json(cars);
+    try {
+        const cars = await Car.findAll({
+            where: { userId: req.user.id },
+            include: [Maintenance, Modification, FutureMod]
+        });
+        res.json(cars);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 app.post('/api/cars', authenticate, async (req, res) => {
-    const car = await Car.create({ ...req.body, userId: req.user.id });
-    res.status(201).json(car);
+    try {
+        const car = await Car.create({ ...req.body, userId: req.user.id });
+        res.status(201).json(car);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
 });
 
-// Start Server
+// Maintenance Routes
+app.post('/api/cars/:carId/maintenance', authenticate, async (req, res) => {
+    try {
+        const maintenance = await Maintenance.create({
+            ...req.body,
+            carId: req.params.carId
+        });
+        res.status(201).json(maintenance);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Modification Routes
+app.post('/api/cars/:carId/modifications', authenticate, async (req, res) => {
+    try {
+        const modification = await Modification.create({
+            ...req.body,
+            carId: req.params.carId
+        });
+        res.status(201).json(modification);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Future Mod Routes
+app.post('/api/cars/:carId/future-mods', authenticate, async (req, res) => {
+    try {
+        const futureMod = await FutureMod.create({
+            ...req.body,
+            carId: req.params.carId
+        });
+        res.status(201).json(futureMod);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// ====================== SERVER INIT ======================
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+
+sequelize.sync({ force: true }).then(() => {
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+        console.log('Database synchronized');
+    });
+}).catch(err => {
+    console.error('Database sync failed:', err);
 });
