@@ -2,8 +2,12 @@
   "ExpandedNodes": [
     "",
     "\\CarTracker-Backend",
-    "\\CarTracker-Backend\\models"
+    "\\CarTracker-Backend\\config",
+    "\\CarTracker-Backend\\controllers",
+    "\\CarTracker-Backend\\middlewares",
+    "\\CarTracker-Backend\\models",
+    "\\CarTracker-Backend\\routes"
   ],
-  "SelectedNode": "\\CarTracker-Backend",
+  "SelectedNode": "\\CarTracker-Backend\\models\\index.js",
   "PreviewInSolutionExplorer": false
 }
